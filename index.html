@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Performance East Inc. — Marine Ops</title>
+  <script src="https://cdn.jsdelivr.net/npm/emailjs-com@3/dist/email.min.js"></script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -63,6 +64,26 @@ async function saveData(boats, log) {
     await Promise.all([ saveRow("boats", boats), saveRow("log", log) ]);
     return true;
   } catch(e) { console.error("Save error:", e); return false; }
+}
+
+/* ============================================================
+   EMAILJS — sends alert emails on add / remove / status change
+   Recipient is whatever your EmailJS template is configured to.
+   ============================================================ */
+const EJS_SERVICE  = "service_g3ts8cr";
+const EJS_TEMPLATE = "template_cfd2z8d";
+const EJS_KEY      = "lIXWz4ggkhI3ib5WH";
+
+async function sendEmailAlert({ user, role, event, unit, details }) {
+  const time = new Date().toLocaleString("en-US",{month:"short",day:"numeric",year:"numeric",hour:"numeric",minute:"2-digit"});
+  try {
+    if(typeof emailjs === "undefined") { console.warn("EmailJS not loaded"); return; }
+    await emailjs.send(EJS_SERVICE, EJS_TEMPLATE, {
+      from_name: "Performance East Ops",
+      subject:   `[PE Ops] ${event} — ${unit}`,
+      message:   `Event: ${event}\nUnit: ${unit}\nBy: ${user} (${role})\nDetails: ${details}\nTime: ${time}`,
+    }, EJS_KEY);
+  } catch(e) { console.error("EmailJS error:", e); }
 }
 
 const T = {
@@ -280,13 +301,18 @@ function BoatCard({ boat, onSelect, selected }) {
   );
 }
 
-function DetailPanel({ boat, onClose, onUpdateStatus, onToggleJob, onTogglePart, currentUser, onLog }) {
+function DetailPanel({ boat, onClose, onUpdateStatus, onToggleJob, onTogglePart, onDelete, currentUser, onLog }) {
   if(!boat) return null;
   const curIdx=WORKFLOW.indexOf(boat.status);
   const next=curIdx<WORKFLOW.length-1?WORKFLOW[curIdx+1]:null;
   const advance=()=>{
     onUpdateStatus(boat.id, next);
     onLog({uid:currentUser.id,user:currentUser.name,msg:`${boat.unit} advanced to "${STATUS[next].label}"`,type:"status",time:ts()});
+  };
+  const remove=()=>{
+    if(window.confirm(`Remove "${boat.unit}" (${boat.dealNo})?\n\nThis permanently deletes it for everyone and cannot be undone.`)){
+      onDelete(boat);
+    }
   };
   return (
     <div style={{ background:T.white, border:`1px solid ${T.border}`, borderRadius:10, overflow:"hidden" }}>
@@ -338,7 +364,10 @@ function DetailPanel({ boat, onClose, onUpdateStatus, onToggleJob, onTogglePart,
             ))}
           </div>
         )}
-        {boat.notes&&<div style={{ background:T.offWhite, borderRadius:7, padding:"9px 12px", border:`1px solid ${T.border}` }}><div style={{ fontSize:10, color:T.midGray, marginBottom:3 }}>Notes</div><div style={{ fontSize:13, color:T.charcoal }}>{boat.notes}</div></div>}
+        {boat.notes&&<div style={{ background:T.offWhite, borderRadius:7, padding:"9px 12px", border:`1px solid ${T.border}`, marginBottom:14 }}><div style={{ fontSize:10, color:T.midGray, marginBottom:3 }}>Notes</div><div style={{ fontSize:13, color:T.charcoal }}>{boat.notes}</div></div>}
+        <div style={{ borderTop:`1px solid ${T.border}`, paddingTop:12, display:"flex", justifyContent:"flex-end" }}>
+          <button onClick={remove} style={{ fontSize:12, padding:"7px 14px", borderRadius:7, background:T.white, color:T.redDark, border:`1px solid ${T.redMid}`, cursor:"pointer", fontWeight:500 }}>🗑 Remove unit</button>
+        </div>
       </div>
     </div>
   );
@@ -562,6 +591,7 @@ function App() {
 
   // Initial load
   useEffect(()=>{
+    if(typeof emailjs !== "undefined"){ try{ emailjs.init(EJS_KEY); }catch(e){} }
     loadData().then(({boats:b,log:l,ok})=>{
       setBoats(b); setActivityLog(l); setConnErr(!ok); setLoading(false);
     });
@@ -604,8 +634,16 @@ function App() {
   },[]);
 
   const handleUpdateStatus=useCallback((id,status)=>{
-    setBoats(bs=>bs.map(b=>b.id===id?{...b,status}:b));
-  },[]);
+    setBoats(bs=>bs.map(b=>{
+      if(b.id!==id) return b;
+      sendEmailAlert({
+        user: currentUser?.name||"Unknown", role: currentUser?.role||"",
+        event:"Status Change", unit:b.unit,
+        details:`${STATUS[b.status].label} → ${STATUS[status].label} | Deal: ${b.dealNo} | Customer: ${b.customer||"—"}`,
+      });
+      return {...b,status};
+    }));
+  },[currentUser]);
 
   const handleToggleJob=useCallback((boatId,jobIdx)=>{
     setBoats(bs=>bs.map(b=>{
@@ -625,7 +663,23 @@ function App() {
     setBoats(bs=>[boat,...bs]);
     setSelected(boat.id);
     addLog({uid:boat.salesperson,user:boat.salesperson||"System",msg:`New unit added: ${boat.unit} (${boat.dealNo} · ${boat.stockNo}) — Customer: ${boat.customer||"TBD"}`,type:"add",time:ts()});
-  },[addLog]);
+    sendEmailAlert({
+      user: currentUser?.name||"Unknown", role: currentUser?.role||"",
+      event:"New Unit Added", unit:boat.unit,
+      details:`Deal: ${boat.dealNo} | RO: ${boat.roNo} | Stock: ${boat.stockNo} | Customer: ${boat.customer||"TBD"} | Salesperson: ${boat.salesperson||"TBD"}`,
+    });
+  },[addLog,currentUser]);
+
+  const handleDelete=useCallback(boat=>{
+    setBoats(bs=>bs.filter(b=>b.id!==boat.id));
+    setSelected(null);
+    addLog({uid:currentUser?.id,user:currentUser?.name||"System",msg:`Unit removed: ${boat.unit} (${boat.dealNo} · ${boat.stockNo})`,type:"edit",time:ts()});
+    sendEmailAlert({
+      user: currentUser?.name||"Unknown", role: currentUser?.role||"",
+      event:"Unit Removed", unit:boat.unit,
+      details:`Deal: ${boat.dealNo} | RO: ${boat.roNo} | Stock: ${boat.stockNo} | Customer: ${boat.customer||"—"} | Status at removal: ${STATUS[boat.status].label}`,
+    });
+  },[addLog,currentUser]);
 
   if(loading) return (
     <div style={{ minHeight:"100vh", background:T.black, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:16 }}>
