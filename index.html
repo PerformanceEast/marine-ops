@@ -1,0 +1,754 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Performance East Inc. — Marine Ops</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #F5F4F2; color: #1A1A1A; }
+    input, select, textarea, button { font-family: inherit; }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-thumb { background: #D4D2CE; border-radius: 3px; }
+    #root { max-width: 960px; margin: 0 auto; padding: 16px; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useRef, useEffect, useCallback } = React;
+
+/* ============================================================
+   SUPABASE SHARED DATABASE CONNECTION
+   These two values connect every user to the same data.
+   The publishable key is safe to live in the browser.
+   ============================================================ */
+const SB_URL = "https://otwzhrgfzcbruygompwb.supabase.co/rest/v1";
+const SB_KEY = "sb_publishable_q_ZC1C5N9zRa1yMA5OItXg_OZmrhYdi";
+const SB_HEADERS = {
+  "apikey": SB_KEY,
+  "Authorization": "Bearer " + SB_KEY,
+  "Content-Type": "application/json",
+};
+
+async function loadData() {
+  try {
+    const res = await fetch(`${SB_URL}/boats_data?id=in.(boats,log)&select=id,data`, { headers: SB_HEADERS });
+    if(!res.ok) throw new Error("HTTP " + res.status);
+    const rows = await res.json();
+    const boatsRow = rows.find(r => r.id === "boats");
+    const logRow   = rows.find(r => r.id === "log");
+    return {
+      boats: Array.isArray(boatsRow?.data) ? boatsRow.data : [],
+      log:   Array.isArray(logRow?.data)   ? logRow.data   : [],
+      ok: true,
+    };
+  } catch(e) { console.error("Load error:", e); return { boats:[], log:[], ok:false }; }
+}
+
+async function saveRow(id, value) {
+  const res = await fetch(`${SB_URL}/boats_data?id=eq.${id}`, {
+    method: "PATCH",
+    headers: { ...SB_HEADERS, "Prefer": "return=minimal" },
+    body: JSON.stringify({ data: value }),
+  });
+  if(!res.ok) throw new Error("HTTP " + res.status);
+}
+
+async function saveData(boats, log) {
+  try {
+    await Promise.all([ saveRow("boats", boats), saveRow("log", log) ]);
+    return true;
+  } catch(e) { console.error("Save error:", e); return false; }
+}
+
+const T = {
+  red:"#C0272D", redDark:"#8B1A1E", redLight:"#F5E0E1", redMid:"#E8B4B6",
+  black:"#1A1A1A", charcoal:"#2E2E2E", darkGray:"#3D3D3D", midGray:"#6B6B6B",
+  lightGray:"#ABABAB", offWhite:"#F5F4F2", surface:"#EDECEA", border:"#D4D2CE",
+  borderDark:"#B0ADA8", white:"#FFFFFF",
+};
+
+const USERS = [
+  { id:"dalton", name:"Dalton",  role:"Sales Manager",   pin:"0000", color:"#1A3F8B", bg:"#E8F0FD" },
+  { id:"logan",  name:"Logan",   role:"Service Manager", pin:"0000", color:"#8B1A1E", bg:"#F5E0E1" },
+  { id:"wes",    name:"Wes",     role:"Service Advisor", pin:"0000", color:"#1A5C2E", bg:"#DFF2E5" },
+];
+
+const STATUS = {
+  SOLD:          { label:"Sold - Pending Service", color:"#8B1A1E", bg:"#F5E0E1", border:"#E8B4B6" },
+  IN_SERVICE:    { label:"In Service",             color:"#1A1A1A", bg:"#EDECEA", border:"#B0ADA8" },
+  WAITING_PARTS: { label:"Waiting on Parts",       color:"#7A5000", bg:"#FDF3DC", border:"#F0D080" },
+  READY:         { label:"Ready for Delivery",     color:"#1A5C2E", bg:"#DFF2E5", border:"#85D4A0" },
+  DELIVERED:     { label:"Delivered",              color:"#6B6B6B", bg:"#F5F4F2", border:"#D4D2CE" },
+};
+const WORKFLOW    = ["SOLD","IN_SERVICE","WAITING_PARTS","READY","DELIVERED"];
+const TECHS       = ["Mike D.","Nate C.","Brennan R.","Travis K."];
+const SALESPEOPLE = ["Matt H.","Bradley R.","Michael W.","Logan E.","Travis W.","Dalton","Joe G."];
+
+const today   = new Date();
+const addDays = (d,n) => { const r=new Date(d); r.setDate(r.getDate()+n); return r; };
+const fmt     = d => d ? new Date(d).toLocaleDateString("en-US",{month:"short",day:"numeric"}) : "—";
+const fmtFull = d => d ? new Date(d).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}) : "TBD";
+const ts      = () => new Date().toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"});
+
+const EMPTY_W = {
+  step:1, dealNo:"", roNo:"", stockNo:"", year:"", make:"", model:"",
+  customer:"", phone:"", email:"", salesperson:"", deliveryDate:"",
+  jobs:[], newJobName:"", newJobTech:TECHS[0], newJobHrs:"1",
+  parts:[], newPartName:"", newPartEta:"", notes:"",
+};
+
+const inp = { width:"100%", padding:"8px 10px", borderRadius:6, border:"1px solid #B0ADA8", background:"#FFFFFF", color:"#1A1A1A", fontSize:13, boxSizing:"border-box" };
+
+function LogoBadge({ height=48 }) {
+  return (
+    <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+      <div style={{ width:4, height:height*0.7, background:T.red, borderRadius:2 }} />
+      <div>
+        <div style={{ fontSize:Math.round(height*0.35), fontWeight:700, color:T.white, letterSpacing:1, lineHeight:1.1 }}>PERFORMANCE EAST</div>
+        <div style={{ fontSize:Math.round(height*0.2), color:T.red, letterSpacing:3, fontWeight:500 }}>INC.</div>
+      </div>
+      <div style={{ width:Math.round(height*0.55), height:Math.round(height*0.55), border:"3px solid #C0272D", borderRadius:"50%", borderRightColor:"transparent", transform:"rotate(-30deg)", marginLeft:4 }} />
+    </div>
+  );
+}
+
+function Badge({ status }) {
+  const s=STATUS[status];
+  return <span style={{ fontSize:11, fontWeight:500, padding:"2px 9px", borderRadius:20, background:s.bg, color:s.color, border:`1px solid ${s.border}`, whiteSpace:"nowrap" }}>{s.label}</span>;
+}
+
+function AlertBar({ type, children }) {
+  const cfg={
+    danger:{bg:"#FDE8E8",border:"#E8B4B6",color:"#8B1A1E",icon:"⚠"},
+    warn:  {bg:"#FDF3DC",border:"#F0D080",color:"#7A5000",icon:"⏱"},
+    info:  {bg:"#E8F0FD",border:"#93B8F5",color:"#1A3F8B",icon:"ℹ"},
+  };
+  const c=cfg[type];
+  return (
+    <div style={{ display:"flex", gap:8, alignItems:"flex-start", padding:"8px 12px", borderRadius:7, background:c.bg, border:`1px solid ${c.border}`, marginBottom:6 }}>
+      <span style={{ color:c.color, fontSize:14, marginTop:1 }}>{c.icon}</span>
+      <span style={{ fontSize:13, color:c.color }}>{children}</span>
+    </div>
+  );
+}
+
+function ProgressBar({ jobs }) {
+  const done=jobs.filter(j=>j.done).length, pct=jobs.length?Math.round((done/jobs.length)*100):0;
+  return (
+    <div style={{ marginTop:6 }}>
+      <div style={{ display:"flex", justifyContent:"space-between", fontSize:11, color:T.midGray, marginBottom:3 }}>
+        <span>{done}/{jobs.length} tasks</span><span>{pct}%</span>
+      </div>
+      <div style={{ height:4, borderRadius:4, background:T.border, overflow:"hidden" }}>
+        <div style={{ height:"100%", width:pct+"%", background:pct===100?"#22a24a":T.red, borderRadius:4, transition:"width .3s" }} />
+      </div>
+    </div>
+  );
+}
+
+function WorkflowStepper({ status }) {
+  const idx=WORKFLOW.indexOf(status);
+  const SHORT={SOLD:"Pending",IN_SERVICE:"In Service",WAITING_PARTS:"Parts",READY:"Ready",DELIVERED:"Done"};
+  return (
+    <div style={{ display:"flex", alignItems:"center", margin:"10px 0" }}>
+      {WORKFLOW.map((s,i)=>{
+        const done=i<idx, active=i===idx;
+        const dot=active?T.red:done?"#22a24a":T.border;
+        return (
+          <div key={s} style={{ display:"flex", alignItems:"center", flex:1 }}>
+            <div style={{ display:"flex", flexDirection:"column", alignItems:"center", flex:1 }}>
+              <div style={{ width:18, height:18, borderRadius:"50%", background:done?"#DFF2E5":active?T.redLight:T.surface, border:`2px solid ${dot}`, display:"flex", alignItems:"center", justifyContent:"center" }}>
+                {done ? <span style={{ fontSize:9, color:"#1A5C2E" }}>✓</span> : <div style={{ width:6, height:6, borderRadius:"50%", background:active?T.red:"transparent" }} />}
+              </div>
+              <span style={{ fontSize:9, color:active?T.red:done?"#1A5C2E":T.lightGray, marginTop:2, textAlign:"center", lineHeight:1.2, fontWeight:active?600:400, maxWidth:52 }}>{SHORT[s]}</span>
+            </div>
+            {i<WORKFLOW.length-1&&<div style={{ height:2, width:10, background:done?"#22a24a":T.border, flexShrink:0, marginBottom:14 }} />}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function LoginScreen({ onLogin }) {
+  const [sel,setSel]=useState(null), [pin,setPin]=useState(""), [err,setErr]=useState("");
+  const pinRef=useRef(null);
+  const selectUser=u=>{setSel(u);setPin("");setErr("");setTimeout(()=>pinRef.current?.focus(),100);};
+  const tryPin=(p)=>{ if(sel.pin===p){onLogin(sel);}else{setErr("Incorrect PIN — try again");setPin("");} };
+  const handleKey=digit=>{
+    if(pin.length>=4) return;
+    const next=pin+digit; setPin(next);
+    if(next.length===4) setTimeout(()=>tryPin(next),120);
+  };
+  return (
+    <div style={{ minHeight:"100vh", background:T.black, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:24 }}>
+      <LogoBadge height={56} />
+      <div style={{ marginTop:32, width:"100%", maxWidth:340 }}>
+        <div style={{ fontSize:13, color:T.lightGray, textAlign:"center", marginBottom:16 }}>Select your profile to continue</div>
+        <div style={{ display:"flex", flexDirection:"column", gap:10, marginBottom:24 }}>
+          {USERS.map(u=>(
+            <button key={u.id} onClick={()=>selectUser(u)} style={{ padding:"14px 18px", borderRadius:9, background:sel?.id===u.id?u.bg:T.charcoal, border:`1.5px solid ${sel?.id===u.id?u.color:T.darkGray}`, cursor:"pointer", display:"flex", alignItems:"center", gap:12 }}>
+              <div style={{ width:38, height:38, borderRadius:"50%", background:u.color, display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, fontWeight:600, color:T.white, flexShrink:0 }}>{u.name[0]}</div>
+              <div style={{ textAlign:"left" }}>
+                <div style={{ fontSize:14, fontWeight:500, color:sel?.id===u.id?u.color:T.white }}>{u.name}</div>
+                <div style={{ fontSize:11, color:sel?.id===u.id?u.color:T.midGray }}>{u.role}</div>
+              </div>
+              {sel?.id===u.id&&<span style={{ marginLeft:"auto", color:u.color, fontSize:18 }}>›</span>}
+            </button>
+          ))}
+        </div>
+        {sel&&(
+          <div style={{ background:T.charcoal, borderRadius:12, padding:"20px 24px", border:`1px solid ${T.darkGray}` }}>
+            <div style={{ fontSize:13, color:T.lightGray, textAlign:"center", marginBottom:14 }}>Enter PIN for <strong style={{ color:T.white }}>{sel.name}</strong></div>
+            <div style={{ display:"flex", justifyContent:"center", gap:10, marginBottom:16 }}>
+              {[0,1,2,3].map(i=><div key={i} style={{ width:14, height:14, borderRadius:"50%", background:i<pin.length?T.red:T.darkGray, border:`2px solid ${i<pin.length?T.red:T.midGray}` }} />)}
+            </div>
+            {err&&<div style={{ fontSize:12, color:T.red, textAlign:"center", marginBottom:10 }}>{err}</div>}
+            <input ref={pinRef} type="password" inputMode="numeric" maxLength={4} value={pin}
+              onChange={e=>{ const v=e.target.value.replace(/\D/g,""); setPin(v); setErr(""); if(v.length===4) setTimeout(()=>tryPin(v),120); }}
+              style={{ width:"100%", textAlign:"center", padding:"10px", borderRadius:7, border:`1px solid ${T.darkGray}`, background:T.black, color:T.white, fontSize:22, letterSpacing:8, boxSizing:"border-box" }} placeholder="••••" />
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:8, marginTop:14 }}>
+              {[1,2,3,4,5,6,7,8,9,"",0,"⌫"].map((d,i)=>(
+                <button key={i} onClick={()=>d==="⌫"?setPin(p=>p.slice(0,-1)):d!==""?handleKey(String(d)):null}
+                  style={{ padding:"12px 0", borderRadius:8, background:d==="⌫"?T.redDark:T.darkGray, color:T.white, border:"none", cursor:d===""?"default":"pointer", fontSize:16, fontWeight:500, opacity:d===""?0:1 }}>{d}</button>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ActivityFeed({ log }) {
+  if(!log.length) return <div style={{ fontSize:13, color:T.midGray, fontStyle:"italic", padding:"10px 0" }}>No activity yet</div>;
+  return (
+    <div style={{ maxHeight:300, overflowY:"auto" }}>
+      {log.map((e,i)=>{
+        const u=USERS.find(u=>u.id===e.uid);
+        return (
+          <div key={i} style={{ display:"flex", gap:10, padding:"7px 0", borderBottom:`0.5px solid ${T.border}` }}>
+            <div style={{ width:28, height:28, borderRadius:"50%", background:u?.color||T.midGray, display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:600, color:T.white, flexShrink:0 }}>{e.user[0]}</div>
+            <div style={{ flex:1 }}>
+              <span style={{ fontSize:13, color:T.black }}>{e.msg}</span>
+              <div style={{ fontSize:11, color:T.midGray }}>{e.user} · {e.time}</div>
+            </div>
+            <span style={{ fontSize:10, padding:"2px 7px", borderRadius:10, background:e.type==="add"?T.redLight:e.type==="status"?"#DFF2E5":"#E8F0FD", color:e.type==="add"?T.redDark:e.type==="status"?"#1A5C2E":"#1A3F8B", alignSelf:"flex-start", whiteSpace:"nowrap" }}>
+              {e.type==="add"?"New unit":e.type==="status"?"Status":"Edit"}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function BoatCard({ boat, onSelect, selected }) {
+  const overdue=boat.deliveryDate&&new Date(boat.deliveryDate)<today&&boat.status!=="DELIVERED";
+  const daysOut=boat.deliveryDate?Math.round((new Date(boat.deliveryDate)-today)/86400000):null;
+  const partsBlocking=boat.parts.some(p=>!p.arrived);
+  return (
+    <div onClick={()=>onSelect(boat.id)} style={{ background:T.white, border:`1.5px solid ${selected?T.red:T.border}`, borderRadius:10, padding:"13px 15px", cursor:"pointer", marginBottom:9 }}>
+      {selected&&<div style={{ height:3, background:T.red, borderRadius:"8px 8px 0 0", margin:"-13px -15px 10px" }} />}
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:8, flexWrap:"wrap" }}>
+        <div style={{ flex:1, minWidth:0 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:5, flexWrap:"wrap", marginBottom:2 }}>
+            <span style={{ fontSize:12, fontWeight:500, color:T.charcoal }}>{boat.dealNo}</span>
+            <span style={{ fontSize:11, color:T.lightGray }}>·</span>
+            <span style={{ fontSize:12, color:T.midGray }}>{boat.roNo}</span>
+            <span style={{ fontSize:11, color:T.lightGray }}>·</span>
+            <span style={{ fontSize:12, color:T.midGray }}>{boat.stockNo}</span>
+            {overdue&&<span style={{ fontSize:10, background:T.redLight, color:T.redDark, padding:"1px 6px", borderRadius:4, fontWeight:600 }}>OVERDUE</span>}
+            {partsBlocking&&boat.status!=="DELIVERED"&&<span style={{ fontSize:10, background:"#FDF3DC", color:"#7A5000", padding:"1px 6px", borderRadius:4, fontWeight:600 }}>PARTS PENDING</span>}
+          </div>
+          <div style={{ fontSize:14, fontWeight:500, color:T.black, marginBottom:2, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{boat.unit}</div>
+          <div style={{ fontSize:12, color:T.midGray }}>👤 {boat.customer||"—"} · {boat.salesperson||"—"}</div>
+        </div>
+        <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:4, flexShrink:0 }}>
+          <Badge status={boat.status} />
+          {daysOut!==null&&<span style={{ fontSize:11, color:overdue?T.red:daysOut<=2?"#7A5000":T.midGray }}>📅 {overdue?`${Math.abs(daysOut)}d overdue`:daysOut===0?"Due today":`${daysOut}d out`}</span>}
+        </div>
+      </div>
+      <WorkflowStepper status={boat.status} />
+      <ProgressBar jobs={boat.jobs} />
+    </div>
+  );
+}
+
+function DetailPanel({ boat, onClose, onUpdateStatus, onToggleJob, onTogglePart, currentUser, onLog }) {
+  if(!boat) return null;
+  const curIdx=WORKFLOW.indexOf(boat.status);
+  const next=curIdx<WORKFLOW.length-1?WORKFLOW[curIdx+1]:null;
+  const advance=()=>{
+    onUpdateStatus(boat.id, next);
+    onLog({uid:currentUser.id,user:currentUser.name,msg:`${boat.unit} advanced to "${STATUS[next].label}"`,type:"status",time:ts()});
+  };
+  return (
+    <div style={{ background:T.white, border:`1px solid ${T.border}`, borderRadius:10, overflow:"hidden" }}>
+      <div style={{ background:T.black, padding:"13px 18px", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+        <div>
+          <div style={{ fontSize:15, fontWeight:500, color:T.white }}>{boat.unit}</div>
+          <div style={{ fontSize:12, color:T.lightGray }}>{boat.dealNo} · {boat.roNo} · {boat.stockNo}</div>
+        </div>
+        <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:T.lightGray, fontSize:20 }}>✕</button>
+      </div>
+      <div style={{ padding:"16px 18px" }}>
+        <WorkflowStepper status={boat.status} />
+        <div style={{ display:"flex", gap:6, margin:"10px 0 14px", flexWrap:"wrap" }}>
+          {next&&<button onClick={advance} style={{ fontSize:12, padding:"5px 14px", borderRadius:20, background:T.red, color:T.white, border:`1px solid ${T.redDark}`, cursor:"pointer", fontWeight:500 }}>Advance → {STATUS[next].label}</button>}
+          {WORKFLOW.filter((_,i)=>i!==curIdx).map(s=>(
+            <button key={s} onClick={()=>{onUpdateStatus(boat.id,s);onLog({uid:currentUser.id,user:currentUser.name,msg:`${boat.unit} moved to "${STATUS[s].label}"`,type:"status",time:ts()});}}
+              style={{ fontSize:11, padding:"3px 10px", borderRadius:20, background:T.surface, color:T.midGray, border:`1px solid ${T.border}`, cursor:"pointer" }}>{STATUS[s].label}</button>
+          ))}
+        </div>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:14 }}>
+          {[["Deal #",boat.dealNo],["RO #",boat.roNo],["Stock #",boat.stockNo],["Customer",boat.customer||"—"],["Salesperson",boat.salesperson||"—"],["Delivery",fmtFull(boat.deliveryDate)]].map(([k,v])=>(
+            <div key={k} style={{ background:T.offWhite, borderRadius:7, padding:"8px 11px", border:`1px solid ${T.border}` }}>
+              <div style={{ fontSize:10, color:T.midGray, marginBottom:2 }}>{k}</div>
+              <div style={{ fontSize:13, fontWeight:500, color:T.black }}>{v}</div>
+            </div>
+          ))}
+        </div>
+        <div style={{ marginBottom:14 }}>
+          <div style={{ fontSize:11, fontWeight:500, color:T.midGray, marginBottom:8, textTransform:"uppercase", letterSpacing:".6px" }}>Jobs</div>
+          {boat.jobs.length===0&&<div style={{ fontSize:13, color:T.midGray, fontStyle:"italic" }}>No jobs added</div>}
+          {boat.jobs.map((j,i)=>(
+            <div key={i} onClick={()=>onToggleJob(boat.id,i)} style={{ display:"flex", alignItems:"center", gap:10, padding:"6px 0", borderBottom:`0.5px solid ${T.border}`, cursor:"pointer" }}>
+              <span style={{ fontSize:16, color:j.done?"#22a24a":T.border }}>{j.done?"✅":"⭕"}</span>
+              <span style={{ flex:1, fontSize:13, color:j.done?T.midGray:T.black, textDecoration:j.done?"line-through":"none" }}>{j.name}</span>
+              <span style={{ fontSize:11, color:T.midGray }}>{j.hrs}h</span>
+              <span style={{ fontSize:11, background:T.surface, padding:"2px 7px", borderRadius:4, color:T.charcoal, border:`1px solid ${T.border}` }}>{j.tech}</span>
+            </div>
+          ))}
+        </div>
+        {boat.parts.length>0&&(
+          <div style={{ marginBottom:14 }}>
+            <div style={{ fontSize:11, fontWeight:500, color:T.midGray, marginBottom:8, textTransform:"uppercase", letterSpacing:".6px" }}>Parts ({boat.parts.filter(p=>p.arrived).length}/{boat.parts.length} arrived)</div>
+            {boat.parts.map((p,i)=>(
+              <div key={i} onClick={()=>onTogglePart(boat.id,i)} style={{ display:"flex", alignItems:"center", gap:10, padding:"6px 0", borderBottom:`0.5px solid ${T.border}`, cursor:"pointer" }}>
+                <span style={{ fontSize:15 }}>{p.arrived?"📦":"🚚"}</span>
+                <span style={{ flex:1, fontSize:13 }}>{p.name}</span>
+                <span style={{ fontSize:11, color:p.arrived?"#1A5C2E":"#7A5000", background:p.arrived?"#DFF2E5":"#FDF3DC", padding:"2px 8px", borderRadius:12, border:`1px solid ${p.arrived?"#85D4A0":"#F0D080"}` }}>{p.arrived?"Arrived":`ETA ${fmt(p.eta)}`}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {boat.notes&&<div style={{ background:T.offWhite, borderRadius:7, padding:"9px 12px", border:`1px solid ${T.border}` }}><div style={{ fontSize:10, color:T.midGray, marginBottom:3 }}>Notes</div><div style={{ fontSize:13, color:T.charcoal }}>{boat.notes}</div></div>}
+      </div>
+    </div>
+  );
+}
+
+function Wizard({ onClose, onAdd, currentUser }) {
+  const [w,setW]=useState({...EMPTY_W});
+  const set=(k,v)=>setW(p=>({...p,[k]:v}));
+  const steps=["Deal Info","Customer","Jobs","Parts","Review"];
+  const addJob=()=>{
+    if(!w.newJobName.trim()) return;
+    set("jobs",[...w.jobs,{name:w.newJobName.trim(),tech:w.newJobTech,hrs:parseFloat(w.newJobHrs)||1,done:false}]);
+    set("newJobName",""); set("newJobHrs","1");
+  };
+  const addPart=()=>{
+    if(!w.newPartName.trim()) return;
+    set("parts",[...w.parts,{name:w.newPartName.trim(),eta:w.newPartEta?new Date(w.newPartEta):addDays(today,3),arrived:false}]);
+    set("newPartName",""); set("newPartEta","");
+  };
+  const finish=()=>{
+    const id="B"+String(Date.now()).slice(-4);
+    onAdd({
+      id, dealNo:w.dealNo||"D-TBD", roNo:w.roNo||"RO-TBD", stockNo:w.stockNo||"STK-TBD",
+      unit:`${w.year} ${w.make} ${w.model}`.trim()||"New Unit",
+      customer:w.customer, phone:w.phone, email:w.email,
+      salesperson:w.salesperson||currentUser.name,
+      deliveryDate:w.deliveryDate?new Date(w.deliveryDate):null,
+      status:"SOLD", priority:2, jobs:w.jobs, parts:w.parts, notes:w.notes, sold:true,
+    });
+    onClose();
+  };
+  return (
+    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.65)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:200 }}>
+      <div style={{ background:T.white, borderRadius:12, width:"min(580px,95vw)", maxHeight:"90vh", overflowY:"auto", border:`1px solid ${T.border}` }}>
+        <div style={{ background:T.black, borderRadius:"12px 12px 0 0", padding:"15px 20px", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+            <div style={{ width:4, height:26, background:T.red, borderRadius:2 }} />
+            <div>
+              <div style={{ fontSize:15, fontWeight:500, color:T.white }}>Add new unit</div>
+              <div style={{ fontSize:11, color:T.lightGray }}>Step {w.step} of {steps.length} — {steps[w.step-1]}</div>
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:T.lightGray, fontSize:20 }}>✕</button>
+        </div>
+        <div style={{ display:"flex", borderBottom:`1px solid ${T.border}` }}>
+          {steps.map((s,i)=>{
+            const done=w.step>i+1, active=w.step===i+1;
+            return <div key={s} onClick={()=>i<w.step-1&&set("step",i+1)} style={{ flex:1, padding:"10px 4px", textAlign:"center", borderBottom:`2px solid ${active?T.red:"transparent"}`, cursor:i<w.step-1?"pointer":"default" }}>
+              <span style={{ fontSize:10, color:active?T.red:done?T.midGray:T.lightGray, fontWeight:active?600:400 }}>{done?"✓":`${i+1}`} {s}</span>
+            </div>;
+          })}
+        </div>
+        <div style={{ padding:"20px 22px" }}>
+          {w.step===1&&<div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10 }}>
+              <div><label style={{ fontSize:11, color:T.midGray, display:"block", marginBottom:4 }}>Deal #</label><input placeholder="D-0000" value={w.dealNo} onChange={e=>set("dealNo",e.target.value)} style={inp} /></div>
+              <div><label style={{ fontSize:11, color:T.midGray, display:"block", marginBottom:4 }}>RO #</label><input placeholder="RO-0000" value={w.roNo} onChange={e=>set("roNo",e.target.value)} style={inp} /></div>
+              <div><label style={{ fontSize:11, color:T.midGray, display:"block", marginBottom:4 }}>Stock #</label><input placeholder="STK-0000" value={w.stockNo} onChange={e=>set("stockNo",e.target.value)} style={inp} /></div>
+            </div>
+            <div>
+              <label style={{ fontSize:11, color:T.midGray, display:"block", marginBottom:4 }}>Unit — Year / Make / Model</label>
+              <div style={{ display:"grid", gridTemplateColumns:"90px 1fr 1fr", gap:8 }}>
+                <input placeholder="2025" value={w.year} onChange={e=>set("year",e.target.value)} style={inp} />
+                <input placeholder="Ranger" value={w.make} onChange={e=>set("make",e.target.value)} style={inp} />
+                <input placeholder="Z521C" value={w.model} onChange={e=>set("model",e.target.value)} style={inp} />
+              </div>
+            </div>
+            <div>
+              <label style={{ fontSize:11, color:T.midGray, display:"block", marginBottom:4 }}>Salesperson</label>
+              <select value={w.salesperson} onChange={e=>set("salesperson",e.target.value)} style={inp}>
+                <option value="">Select salesperson</option>
+                {SALESPEOPLE.map(s=><option key={s}>{s}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={{ fontSize:11, color:T.midGray, display:"block", marginBottom:4 }}>Target delivery date</label>
+              <input type="date" value={w.deliveryDate} onChange={e=>set("deliveryDate",e.target.value)} style={inp} />
+            </div>
+            {(w.year||w.make||w.model||w.stockNo)&&<div style={{ background:T.offWhite, border:`1px solid ${T.border}`, borderRadius:8, padding:"10px 14px", display:"flex", gap:10, alignItems:"center" }}>
+              <span style={{ fontSize:22 }}>⛵</span>
+              <div>
+                <div style={{ fontSize:13, fontWeight:500, color:T.black }}>{[w.year,w.make,w.model].filter(Boolean).join(" ")||"—"}</div>
+                <div style={{ fontSize:11, color:T.midGray }}>{w.dealNo||"Deal TBD"} · {w.roNo||"RO TBD"} · {w.stockNo||"Stock TBD"}</div>
+              </div>
+            </div>}
+          </div>}
+
+          {w.step===2&&<div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+            <div><label style={{ fontSize:11, color:T.midGray, display:"block", marginBottom:4 }}>Customer name</label><input placeholder="Full name" value={w.customer} onChange={e=>set("customer",e.target.value)} style={inp} /></div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+              <div><label style={{ fontSize:11, color:T.midGray, display:"block", marginBottom:4 }}>Phone</label><input type="tel" placeholder="(555) 000-0000" value={w.phone} onChange={e=>set("phone",e.target.value)} style={inp} /></div>
+              <div><label style={{ fontSize:11, color:T.midGray, display:"block", marginBottom:4 }}>Email</label><input type="email" placeholder="email@example.com" value={w.email} onChange={e=>set("email",e.target.value)} style={inp} /></div>
+            </div>
+            <div><label style={{ fontSize:11, color:T.midGray, display:"block", marginBottom:4 }}>Notes</label><textarea value={w.notes} onChange={e=>set("notes",e.target.value)} placeholder="Special requests, delivery instructions…" style={{...inp,minHeight:72,resize:"vertical"}} /></div>
+          </div>}
+
+          {w.step===3&&<div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr auto auto auto", gap:8, marginBottom:12, alignItems:"end" }}>
+              <div><label style={{ fontSize:11, color:T.midGray, display:"block", marginBottom:4 }}>Job name</label>
+                <input placeholder="e.g. Trolling Motor Install" value={w.newJobName} onChange={e=>set("newJobName",e.target.value)} onKeyDown={e=>e.key==="Enter"&&addJob()} style={inp} />
+              </div>
+              <div><label style={{ fontSize:11, color:T.midGray, display:"block", marginBottom:4 }}>Tech</label>
+                <select value={w.newJobTech} onChange={e=>set("newJobTech",e.target.value)} style={{...inp,width:"auto"}}>{TECHS.map(t=><option key={t}>{t}</option>)}</select>
+              </div>
+              <div><label style={{ fontSize:11, color:T.midGray, display:"block", marginBottom:4 }}>Hrs</label>
+                <input type="number" min="0.5" step="0.5" value={w.newJobHrs} onChange={e=>set("newJobHrs",e.target.value)} style={{...inp,width:64}} />
+              </div>
+              <button onClick={addJob} style={{ padding:"8px 14px", borderRadius:7, background:T.red, color:T.white, border:"none", cursor:"pointer", fontSize:13, fontWeight:500, height:38, alignSelf:"end" }}>Add</button>
+            </div>
+            {w.jobs.length===0&&<div style={{ fontSize:13, color:T.midGray, fontStyle:"italic", padding:"8px 0" }}>No jobs added yet</div>}
+            {w.jobs.map((j,i)=><div key={i} style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 0", borderBottom:`0.5px solid ${T.border}` }}>
+              <span style={{ fontSize:14, color:T.border }}>⭕</span>
+              <span style={{ flex:1, fontSize:13 }}>{j.name}</span>
+              <span style={{ fontSize:11, color:T.midGray }}>{j.hrs}h · {j.tech}</span>
+              <button onClick={()=>set("jobs",w.jobs.filter((_,x)=>x!==i))} style={{ background:"none", border:"none", cursor:"pointer", color:T.red }}>🗑</button>
+            </div>)}
+          </div>}
+
+          {w.step===4&&<div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr auto auto", gap:8, marginBottom:12, alignItems:"end" }}>
+              <div><label style={{ fontSize:11, color:T.midGray, display:"block", marginBottom:4 }}>Part name</label>
+                <input placeholder="e.g. Garmin 93sv Transducer" value={w.newPartName} onChange={e=>set("newPartName",e.target.value)} onKeyDown={e=>e.key==="Enter"&&addPart()} style={inp} />
+              </div>
+              <div><label style={{ fontSize:11, color:T.midGray, display:"block", marginBottom:4 }}>ETA</label>
+                <input type="date" value={w.newPartEta} onChange={e=>set("newPartEta",e.target.value)} style={{...inp,width:"auto"}} />
+              </div>
+              <button onClick={addPart} style={{ padding:"8px 14px", borderRadius:7, background:T.red, color:T.white, border:"none", cursor:"pointer", fontSize:13, height:38, alignSelf:"end" }}>Add</button>
+            </div>
+            {w.parts.length===0&&<div style={{ fontSize:13, color:T.midGray, fontStyle:"italic", padding:"8px 0" }}>No parts — skip if none needed</div>}
+            {w.parts.map((p,i)=><div key={i} style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 0", borderBottom:`0.5px solid ${T.border}` }}>
+              <span style={{ fontSize:14 }}>🚚</span>
+              <span style={{ flex:1, fontSize:13 }}>{p.name}</span>
+              <span style={{ fontSize:11, color:T.midGray }}>ETA {fmt(p.eta)}</span>
+              <button onClick={()=>set("parts",w.parts.filter((_,x)=>x!==i))} style={{ background:"none", border:"none", cursor:"pointer", color:T.red }}>🗑</button>
+            </div>)}
+          </div>}
+
+          {w.step===5&&<div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+            <div style={{ background:T.black, borderRadius:9, padding:"14px 16px" }}>
+              <div style={{ fontSize:16, fontWeight:500, color:T.white, marginBottom:6 }}>{[w.year,w.make,w.model].filter(Boolean).join(" ")||"New Unit"}</div>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6, fontSize:12 }}>
+                {[["Deal #",w.dealNo],["RO #",w.roNo],["Stock #",w.stockNo],["Customer",w.customer],["Salesperson",w.salesperson||currentUser.name],["Delivery",w.deliveryDate?fmtFull(new Date(w.deliveryDate)):"TBD"],["Jobs",w.jobs.length],["Parts",w.parts.length]].map(([k,v])=>(
+                  <div key={k}><span style={{ color:T.lightGray }}>{k}: </span><span style={{ fontWeight:500, color:T.white }}>{v||"—"}</span></div>
+                ))}
+              </div>
+            </div>
+            <div style={{ display:"flex", alignItems:"center", gap:8, padding:"10px 14px", background:T.redLight, borderRadius:8, border:`1px solid ${T.redMid}` }}>
+              <span style={{ color:T.red, fontSize:16 }}>✔</span>
+              <span style={{ fontSize:13, color:T.redDark }}>Unit will be created as <strong>Sold - Pending Service</strong> and saved to the shared database.</span>
+            </div>
+          </div>}
+
+          <div style={{ display:"flex", justifyContent:"space-between", marginTop:22 }}>
+            <button onClick={()=>w.step>1?set("step",w.step-1):onClose()} style={{ padding:"8px 18px", borderRadius:7, border:`1px solid ${T.border}`, background:T.surface, cursor:"pointer", fontSize:13, color:T.charcoal }}>{w.step>1?"Back":"Cancel"}</button>
+            {w.step<5
+              ?<button onClick={()=>set("step",w.step+1)} style={{ padding:"8px 20px", borderRadius:7, background:T.red, color:T.white, border:"none", cursor:"pointer", fontSize:13, fontWeight:500 }}>Next →</button>
+              :<button onClick={finish} style={{ padding:"8px 20px", borderRadius:7, background:T.black, color:T.white, border:"none", cursor:"pointer", fontSize:13, fontWeight:500 }}>Create unit</button>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TechWorkload({ boats }) {
+  const load={};
+  TECHS.forEach(t=>{load[t]={hrs:0,jobs:0};});
+  boats.forEach(b=>b.jobs.filter(j=>!j.done).forEach(j=>{if(load[j.tech]){load[j.tech].hrs+=j.hrs;load[j.tech].jobs++;}}));
+  const max=Math.max(...Object.values(load).map(l=>l.hrs),8);
+  return (
+    <div style={{ background:T.white, border:`1px solid ${T.border}`, borderRadius:10, overflow:"hidden", marginBottom:12 }}>
+      <div style={{ background:T.black, padding:"12px 16px" }}><div style={{ fontSize:14, fontWeight:500, color:T.white }}>Technician workload</div></div>
+      <div style={{ padding:16 }}>
+        {TECHS.map(t=>(
+          <div key={t} style={{ marginBottom:12 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, marginBottom:4 }}><span style={{ fontWeight:500, color:T.black }}>{t}</span><span style={{ color:T.midGray }}>{load[t].hrs}h · {load[t].jobs} jobs</span></div>
+            <div style={{ height:8, borderRadius:4, background:T.surface, overflow:"hidden" }}><div style={{ height:"100%", width:`${(load[t].hrs/max)*100}%`, background:load[t].hrs>10?T.red:load[t].hrs>6?"#D4860A":"#2E7D32", borderRadius:4 }} /></div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function WeekCalendar({ boats }) {
+  const days=Array.from({length:7},(_,i)=>addDays(today,i));
+  const getD=d=>boats.filter(b=>b.deliveryDate&&fmt(b.deliveryDate)===fmt(d)&&b.status!=="DELIVERED");
+  return (
+    <div style={{ background:T.white, border:`1px solid ${T.border}`, borderRadius:10, overflow:"hidden", marginBottom:12 }}>
+      <div style={{ background:T.black, padding:"12px 16px" }}><div style={{ fontSize:14, fontWeight:500, color:T.white }}>7-day delivery schedule</div></div>
+      <div style={{ padding:14 }}>
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", gap:6 }}>
+          {days.map((d,i)=>{
+            const deliveries=getD(d), isToday=i===0;
+            return <div key={i} style={{ background:isToday?T.redLight:T.offWhite, borderRadius:8, padding:"8px 6px", minHeight:58, border:`1px solid ${isToday?T.redMid:T.border}` }}>
+              <div style={{ fontSize:10, fontWeight:500, color:isToday?T.red:T.midGray, marginBottom:4 }}>{d.toLocaleDateString("en-US",{weekday:"short"}).toUpperCase()}<br /><span style={{ fontSize:13, color:isToday?T.red:T.black }}>{d.getDate()}</span></div>
+              {deliveries.map(b=><div key={b.id} style={{ fontSize:10, background:STATUS[b.status].bg, color:STATUS[b.status].color, borderRadius:4, padding:"2px 4px", marginBottom:2, lineHeight:1.3 }}>{b.id}</div>)}
+            </div>;
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const [currentUser,setCurrentUser]=useState(null);
+  const [boats,setBoats]=useState([]);
+  const [activityLog,setActivityLog]=useState([]);
+  const [selected,setSelected]=useState(null);
+  const [view,setView]=useState("dashboard");
+  const [filterStatus,setFilterStatus]=useState("ALL");
+  const [showWizard,setShowWizard]=useState(false);
+  const [newAlerts,setNewAlerts]=useState([]);
+  const [saveStatus,setSaveStatus]=useState("idle"); // idle | saving | saved | error
+  const [loading,setLoading]=useState(true);
+  const [connErr,setConnErr]=useState(false);
+  const saveTimer=useRef(null);
+  const skipNextSave=useRef(true);   // don't save right after loading
+  const savingNow=useRef(false);     // pause polling while a save is in flight
+
+  // Initial load
+  useEffect(()=>{
+    loadData().then(({boats:b,log:l,ok})=>{
+      setBoats(b); setActivityLog(l); setConnErr(!ok); setLoading(false);
+    });
+  },[]);
+
+  // Poll the shared database every 12s so each user sees others' changes
+  useEffect(()=>{
+    if(!currentUser) return;
+    const iv=setInterval(async()=>{
+      if(savingNow.current) return; // don't clobber a save in progress
+      const { boats:b, log:l, ok } = await loadData();
+      if(ok){
+        skipNextSave.current=true; // incoming remote data shouldn't trigger a re-save
+        setBoats(b); setActivityLog(l); setConnErr(false);
+      }
+    },12000);
+    return ()=>clearInterval(iv);
+  },[currentUser]);
+
+  // Auto-save to shared database whenever data changes (debounced)
+  useEffect(()=>{
+    if(loading) return;
+    if(skipNextSave.current){ skipNextSave.current=false; return; }
+    setSaveStatus("saving");
+    savingNow.current=true;
+    clearTimeout(saveTimer.current);
+    saveTimer.current=setTimeout(async()=>{
+      const ok=await saveData(boats,activityLog);
+      savingNow.current=false;
+      setSaveStatus(ok?"saved":"error");
+      setConnErr(!ok);
+      setTimeout(()=>setSaveStatus("idle"),2500);
+    },700);
+    return ()=>clearTimeout(saveTimer.current);
+  },[boats,activityLog]);
+
+  const addLog=useCallback(entry=>{
+    setActivityLog(l=>[entry,...l].slice(0,100));
+    setNewAlerts(a=>[entry,...a]);
+  },[]);
+
+  const handleUpdateStatus=useCallback((id,status)=>{
+    setBoats(bs=>bs.map(b=>b.id===id?{...b,status}:b));
+  },[]);
+
+  const handleToggleJob=useCallback((boatId,jobIdx)=>{
+    setBoats(bs=>bs.map(b=>{
+      if(b.id!==boatId) return b;
+      return {...b, jobs:b.jobs.map((j,i)=>i===jobIdx?{...j,done:!j.done}:j)};
+    }));
+  },[]);
+
+  const handleTogglePart=useCallback((boatId,partIdx)=>{
+    setBoats(bs=>bs.map(b=>{
+      if(b.id!==boatId) return b;
+      return {...b, parts:b.parts.map((p,i)=>i===partIdx?{...p,arrived:!p.arrived}:p)};
+    }));
+  },[]);
+
+  const handleAdd=useCallback(boat=>{
+    setBoats(bs=>[boat,...bs]);
+    setSelected(boat.id);
+    addLog({uid:boat.salesperson,user:boat.salesperson||"System",msg:`New unit added: ${boat.unit} (${boat.dealNo} · ${boat.stockNo}) — Customer: ${boat.customer||"TBD"}`,type:"add",time:ts()});
+  },[addLog]);
+
+  if(loading) return (
+    <div style={{ minHeight:"100vh", background:T.black, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:16 }}>
+      <LogoBadge height={56} />
+      <div style={{ fontSize:13, color:T.lightGray }}>Connecting to shared database…</div>
+    </div>
+  );
+
+  if(!currentUser) return <LoginScreen onLogin={u=>{setCurrentUser(u);addLog({uid:u.id,user:u.name,msg:`${u.name} (${u.role}) logged in`,type:"edit",time:ts()});}} />;
+
+  const selectedBoat=boats.find(b=>b.id===selected);
+
+  const opAlerts=[];
+  boats.forEach(b=>{
+    if(b.deliveryDate&&new Date(b.deliveryDate)<today&&b.status!=="DELIVERED")
+      opAlerts.push({type:"danger",msg:`${b.unit} — delivery overdue (${fmt(b.deliveryDate)})`});
+    const late=b.parts.filter(p=>!p.arrived&&new Date(p.eta)<=addDays(today,1));
+    if(late.length&&b.status!=="DELIVERED")
+      opAlerts.push({type:"warn",msg:`${b.unit} — parts due/overdue: ${late.map(p=>p.name).join(", ")}`});
+    if(b.status==="READY"&&b.sold)
+      opAlerts.push({type:"info",msg:`${b.unit} — ready for delivery. Contact ${b.customer}.`});
+  });
+
+  const counts=Object.fromEntries(Object.keys(STATUS).map(s=>[s,boats.filter(b=>b.status===s).length]));
+  const filtered=filterStatus==="ALL"?boats:boats.filter(b=>b.status===filterStatus);
+  const sorted=[...filtered].sort((a,b)=>{
+    if(a.sold!==b.sold) return a.sold?-1:1;
+    if(a.deliveryDate&&b.deliveryDate) return new Date(a.deliveryDate)-new Date(b.deliveryDate);
+    return a.deliveryDate?-1:1;
+  });
+  const COLS=[["Pending","SOLD"],["In Service","IN_SERVICE"],["Parts","WAITING_PARTS"],["Ready","READY"],["Delivered","DELIVERED"]];
+  const u=currentUser;
+
+  const saveChip = saveStatus==="saving" ? {t:"⏳ Saving…", c:"#D4860A", bg:"#FDF3DC", b:"#F0D080"}
+    : saveStatus==="saved" ? {t:"✅ Saved", c:"#22a24a", bg:"#DFF2E5", b:"#85D4A0"}
+    : saveStatus==="error" ? {t:"⚠ Save failed", c:"#8B1A1E", bg:"#FDE8E8", b:"#E8B4B6"} : null;
+
+  return (
+    <div style={{ fontFamily:"-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif", background:T.offWhite, minHeight:"100vh", padding:16 }}>
+      {showWizard&&<Wizard onClose={()=>setShowWizard(false)} onAdd={handleAdd} currentUser={u} />}
+
+      {connErr&&<AlertBar type="danger">Can't reach the shared database right now — changes may not be saving. Check your internet connection.</AlertBar>}
+
+      {newAlerts.length>0&&<div style={{ marginBottom:12 }}>{newAlerts.map((a,i)=>(
+        <div key={i} style={{ display:"flex", alignItems:"flex-start", gap:8, padding:"9px 14px", borderRadius:8, background:a.type==="add"?T.redLight:a.type==="status"?"#DFF2E5":"#E8F0FD", border:`1px solid ${a.type==="add"?T.redMid:a.type==="status"?"#85D4A0":"#93B8F5"}`, marginBottom:6 }}>
+          <span style={{ fontSize:15 }}>{a.type==="add"?"🔔":a.type==="status"?"🔄":"ℹ"}</span>
+          <span style={{ flex:1, fontSize:13, color:a.type==="add"?T.redDark:a.type==="status"?"#1A5C2E":"#1A3F8B" }}><strong>{a.user}</strong> — {a.msg}</span>
+          <button onClick={()=>setNewAlerts(x=>x.filter((_,j)=>j!==i))} style={{ background:"none", border:"none", cursor:"pointer", color:T.midGray }}>✕</button>
+        </div>
+      ))}</div>}
+
+      <div style={{ background:T.black, borderRadius:10, padding:"14px 20px", marginBottom:14, display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:10 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:14 }}>
+          <LogoBadge height={48} />
+          {saveChip&&<span style={{ fontSize:11, color:saveChip.c, background:saveChip.bg, padding:"3px 9px", borderRadius:12, border:`1px solid ${saveChip.b}` }}>{saveChip.t}</span>}
+        </div>
+        <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+          <div style={{ display:"flex", gap:5 }}>
+            {["dashboard","calendar","workload","activity"].map(v=>(
+              <button key={v} onClick={()=>setView(v)} style={{ fontSize:11, padding:"5px 11px", borderRadius:6, border:`1px solid ${view===v?T.red:T.darkGray}`, background:view===v?T.red:"transparent", color:view===v?T.white:T.lightGray, cursor:"pointer", fontWeight:view===v?500:400 }}>
+                {v.charAt(0).toUpperCase()+v.slice(1)}
+                {v==="activity"&&activityLog.length>0&&<span style={{ marginLeft:5, background:T.red, color:T.white, fontSize:9, padding:"1px 5px", borderRadius:8 }}>{activityLog.length}</span>}
+              </button>
+            ))}
+          </div>
+          <button onClick={()=>setShowWizard(true)} style={{ fontSize:12, padding:"5px 13px", borderRadius:6, border:`1px solid ${T.red}`, background:T.red, color:T.white, cursor:"pointer", fontWeight:500 }}>+ Add unit</button>
+          <div style={{ display:"flex", alignItems:"center", gap:8, padding:"5px 10px", borderRadius:6, background:T.charcoal, border:`1px solid ${T.darkGray}` }}>
+            <div style={{ width:24, height:24, borderRadius:"50%", background:u.color, display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:600, color:T.white }}>{u.name[0]}</div>
+            <div style={{ lineHeight:1.2 }}><div style={{ fontSize:12, color:T.white, fontWeight:500 }}>{u.name}</div><div style={{ fontSize:10, color:T.lightGray }}>{u.role}</div></div>
+            <button onClick={()=>setCurrentUser(null)} style={{ background:"none", border:"none", cursor:"pointer", color:T.midGray, marginLeft:4, fontSize:16 }} title="Log out">⇥</button>
+          </div>
+        </div>
+      </div>
+
+      {opAlerts.length>0&&<div style={{ marginBottom:14 }}>{opAlerts.map((a,i)=><AlertBar key={i} type={a.type}>{a.msg}</AlertBar>)}</div>}
+
+      {view==="dashboard"&&<>
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(5,1fr)", gap:8, marginBottom:14 }}>
+          {COLS.map(([l,s])=>(
+            <div key={s} onClick={()=>setFilterStatus(filterStatus===s?"ALL":s)} style={{ background:filterStatus===s?T.black:T.white, borderRadius:8, padding:"12px 10px", textAlign:"center", cursor:"pointer", border:`1.5px solid ${filterStatus===s?T.red:T.border}` }}>
+              <div style={{ fontSize:26, fontWeight:500, color:filterStatus===s?T.red:T.black }}>{counts[s]}</div>
+              <div style={{ fontSize:10, color:filterStatus===s?T.lightGray:T.midGray, marginTop:2 }}>{l}</div>
+              <div style={{ height:2, width:20, background:filterStatus===s?T.red:T.border, borderRadius:2, margin:"6px auto 0" }} />
+            </div>
+          ))}
+        </div>
+        <div style={{ display:"flex", gap:5, marginBottom:12, flexWrap:"wrap" }}>
+          <button onClick={()=>setFilterStatus("ALL")} style={{ fontSize:11, padding:"3px 11px", borderRadius:20, cursor:"pointer", background:filterStatus==="ALL"?T.black:T.surface, color:filterStatus==="ALL"?T.white:T.midGray, border:`1px solid ${filterStatus==="ALL"?T.black:T.border}`, fontWeight:filterStatus==="ALL"?600:400 }}>All units</button>
+          {Object.keys(STATUS).map(s=>(
+            <button key={s} onClick={()=>setFilterStatus(filterStatus===s?"ALL":s)} style={{ fontSize:11, padding:"3px 11px", borderRadius:20, cursor:"pointer", background:filterStatus===s?STATUS[s].bg:T.surface, color:filterStatus===s?STATUS[s].color:T.midGray, border:`1px solid ${filterStatus===s?STATUS[s].border:T.border}`, fontWeight:filterStatus===s?600:400 }}>{STATUS[s].label}</button>
+          ))}
+        </div>
+        <div style={{ display:"grid", gridTemplateColumns:selected?"1fr 1fr":"1fr", gap:12 }}>
+          <div>
+            {sorted.length===0&&<div style={{ textAlign:"center", padding:"48px 24px", color:T.midGray, fontSize:14 }}>
+              <div style={{ fontSize:48, marginBottom:12 }}>⛵</div>
+              No units yet — click <strong>+ Add unit</strong> to get started
+            </div>}
+            {sorted.map(b=><BoatCard key={b.id} boat={b} onSelect={id=>setSelected(id===selected?null:id)} selected={selected===b.id} />)}
+          </div>
+          {selected&&<div>
+            <DetailPanel boat={selectedBoat} onClose={()=>setSelected(null)} onUpdateStatus={handleUpdateStatus} onToggleJob={handleToggleJob} onTogglePart={handleTogglePart} currentUser={u} onLog={addLog} />
+          </div>}
+        </div>
+      </>}
+
+      {view==="calendar"&&<WeekCalendar boats={boats} />}
+      {view==="workload"&&<TechWorkload boats={boats} />}
+      {view==="activity"&&(
+        <div style={{ background:T.white, border:`1px solid ${T.border}`, borderRadius:10, overflow:"hidden" }}>
+          <div style={{ background:T.black, padding:"12px 16px", display:"flex", alignItems:"center", gap:8 }}>
+            <div style={{ width:3, height:18, background:T.red, borderRadius:2 }} />
+            <div style={{ fontSize:14, fontWeight:500, color:T.white }}>Activity log</div>
+            {activityLog.length>0&&<button onClick={()=>setActivityLog([])} style={{ marginLeft:"auto", fontSize:11, padding:"3px 10px", borderRadius:6, background:"transparent", border:`1px solid ${T.darkGray}`, color:T.lightGray, cursor:"pointer" }}>Clear log</button>}
+          </div>
+          <div style={{ padding:16 }}><ActivityFeed log={activityLog} /></div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
