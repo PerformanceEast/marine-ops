@@ -302,17 +302,13 @@ function BoatCard({ boat, onSelect, selected }) {
 }
 
 function DetailPanel({ boat, onClose, onUpdateStatus, onToggleJob, onTogglePart, onDelete, currentUser, onLog }) {
+  const [confirmDel,setConfirmDel]=useState(false);
   if(!boat) return null;
   const curIdx=WORKFLOW.indexOf(boat.status);
   const next=curIdx<WORKFLOW.length-1?WORKFLOW[curIdx+1]:null;
   const advance=()=>{
     onUpdateStatus(boat.id, next);
     onLog({uid:currentUser.id,user:currentUser.name,msg:`${boat.unit} advanced to "${STATUS[next].label}"`,type:"status",time:ts()});
-  };
-  const remove=()=>{
-    if(window.confirm(`Remove "${boat.unit}" (${boat.dealNo})?\n\nThis permanently deletes it for everyone and cannot be undone.`)){
-      onDelete(boat);
-    }
   };
   return (
     <div style={{ background:T.white, border:`1px solid ${T.border}`, borderRadius:10, overflow:"hidden" }}>
@@ -365,8 +361,20 @@ function DetailPanel({ boat, onClose, onUpdateStatus, onToggleJob, onTogglePart,
           </div>
         )}
         {boat.notes&&<div style={{ background:T.offWhite, borderRadius:7, padding:"9px 12px", border:`1px solid ${T.border}`, marginBottom:14 }}><div style={{ fontSize:10, color:T.midGray, marginBottom:3 }}>Notes</div><div style={{ fontSize:13, color:T.charcoal }}>{boat.notes}</div></div>}
-        <div style={{ borderTop:`1px solid ${T.border}`, paddingTop:12, display:"flex", justifyContent:"flex-end" }}>
-          <button onClick={remove} style={{ fontSize:12, padding:"7px 14px", borderRadius:7, background:T.white, color:T.redDark, border:`1px solid ${T.redMid}`, cursor:"pointer", fontWeight:500 }}>🗑 Remove unit</button>
+        <div style={{ borderTop:`1px solid ${T.border}`, paddingTop:12 }}>
+          {!confirmDel ? (
+            <div style={{ display:"flex", justifyContent:"flex-end" }}>
+              <button onClick={()=>setConfirmDel(true)} style={{ fontSize:12, padding:"7px 14px", borderRadius:7, background:T.white, color:T.redDark, border:`1px solid ${T.redMid}`, cursor:"pointer", fontWeight:500 }}>🗑 Remove unit</button>
+            </div>
+          ) : (
+            <div style={{ background:"#FDE8E8", border:`1px solid ${T.redMid}`, borderRadius:8, padding:"12px 14px" }}>
+              <div style={{ fontSize:13, color:T.redDark, marginBottom:10 }}>Permanently remove <strong>{boat.unit}</strong> ({boat.dealNo}) for everyone? This can't be undone.</div>
+              <div style={{ display:"flex", gap:8, justifyContent:"flex-end" }}>
+                <button onClick={()=>setConfirmDel(false)} style={{ fontSize:12, padding:"7px 14px", borderRadius:7, background:T.surface, color:T.charcoal, border:`1px solid ${T.border}`, cursor:"pointer" }}>Cancel</button>
+                <button onClick={()=>{ setConfirmDel(false); onDelete(boat); }} style={{ fontSize:12, padding:"7px 14px", borderRadius:7, background:T.red, color:T.white, border:`1px solid ${T.redDark}`, cursor:"pointer", fontWeight:500 }}>Yes, remove it</button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -781,7 +789,7 @@ function App() {
             {sorted.map(b=><BoatCard key={b.id} boat={b} onSelect={id=>setSelected(id===selected?null:id)} selected={selected===b.id} />)}
           </div>
           {selected&&<div>
-            <DetailPanel boat={selectedBoat} onClose={()=>setSelected(null)} onUpdateStatus={handleUpdateStatus} onToggleJob={handleToggleJob} onTogglePart={handleTogglePart} currentUser={u} onLog={addLog} />
+            <DetailPanel boat={selectedBoat} onClose={()=>setSelected(null)} onUpdateStatus={handleUpdateStatus} onToggleJob={handleToggleJob} onTogglePart={handleTogglePart} onDelete={handleDelete} currentUser={u} onLog={addLog} />
           </div>}
         </div>
       </>}
